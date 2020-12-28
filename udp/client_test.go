@@ -215,6 +215,65 @@ func TestClientConn_Get_SeparateMessage(t *testing.T) {
 
 }
 
+func TestClientConn_Get_NoETagNoContentFormat(t *testing.T) {
+	l, err := coapNet.NewListenUDP("udp", "")
+	require.NoError(t, err)
+	defer l.Close()
+	var wg sync.WaitGroup
+	defer wg.Wait()
+
+	m := mux.NewRouter()
+	m.Handle("/a", mux.HandlerFunc(func(w mux.ResponseWriter, r *mux.Message) {
+		assert.Equal(t, codes.GET, r.Code)
+		customResp := message.Message{
+			Code:    codes.Content,
+			Token:   r.Token,
+			Context: r.Context,
+		}
+
+		err = w.Client().WriteMessage(&customResp)
+		if err != nil {
+			log.Printf("cannot set response: %v", err)
+		}
+	}))
+
+	s := NewServer(WithMux(m))
+	defer s.Stop()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err := s.Serve(l)
+		require.NoError(t, err)
+	}()
+
+	cc, err := Dial(l.LocalAddr().String(), WithHandlerFunc(func(w *client.ResponseWriter, r *pool.Message) {
+		assert.NoError(t, fmt.Errorf("none msg expected comes: %+v", r))
+	}))
+	require.NoError(t, err)
+	defer cc.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*3600)
+	defer cancel()
+
+	req, err := client.NewGetRequest(ctx, "/a")
+	require.NoError(t, err)
+	req.SetType(udpMessage.Confirmable)
+	req.SetMessageID(udpMessage.GetMID())
+	resp, err := cc.Do(req)
+	require.NoError(t, err)
+	assert.Equal(t, codes.Content, resp.Code())
+
+	etag, err := resp.ETag()
+	require.EqualError(t, err, message.ErrOptionNotFound.Error())
+	assert.Nil(t, etag)
+
+	contentFormat, err := resp.ContentFormat()
+	require.EqualError(t, err, message.ErrOptionNotFound.Error())
+	assert.Equal(t, message.MediaType(0x0), contentFormat)
+
+}
+
 func TestClientConn_Post(t *testing.T) {
 	type args struct {
 		path          string
